@@ -33,6 +33,18 @@ FS.Store.GridFS = function(name, options) {
 
     typeName: 'storage.gridfs',
 
+    getStream: function(fileObj, callback) {
+      var self = this;
+      console.log("cfs-gridfs getStream Called");
+      callback(new Error("cfs-gridfs getStream not implemented"));
+    },
+
+    putStream: function(fileObj, callback) {
+      var self = this;
+      console.log("cfs-gridfs putStream Called");
+      callback(new Error("cfs-gridfs putStream not implemented"));
+    },
+
     get: function(fileObj, callback) {
       var self = this;
       var fileInfo = fileObj.getCopyInfo(name);
