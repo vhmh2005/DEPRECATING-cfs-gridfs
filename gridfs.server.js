@@ -33,16 +33,23 @@ FS.Store.GridFS = function(name, options) {
 
     typeName: 'storage.gridfs',
 
+    // Returns a readable Stream
     getStream: function(fileObj, callback) {
       var self = this;
       console.log("cfs-gridfs getStream Called");
-      callback(new Error("cfs-gridfs getStream not implemented"));
-    },
+      var fileInfo = fileObj.getCopyInfo(name);
+      if (!fileInfo) { return callback(null, null); }
+      var fileKey = fileInfo.key;
 
-    putStream: function(fileObj, callback) {
-      var self = this;
-      console.log("cfs-gridfs putStream Called");
-      callback(new Error("cfs-gridfs putStream not implemented"));
+      mongodb.GridStore.exist(self.db, fileKey, gridfsName, {}, function (err, existing) {
+        if (err) { return callback(err); }
+        if (!existing) { return callback(null, null); }
+        var gstore = new mongodb.GridStore(self.db, fileKey, 'r', { root: gridfsName });
+        gstore.open(function (err, gs) {
+          if (err) { return callback(err); }
+          callback(null, gs.stream(true));
+        });
+      });
     },
 
     get: function(fileObj, callback) {
@@ -91,6 +98,67 @@ FS.Store.GridFS = function(name, options) {
           });
         });
       });
+    },
+
+    // Returns a writable stream
+    putStream: function(fileObj, callback) {
+      var self = this;
+      console.log("cfs-gridfs putStream Called");
+      options = options || {};
+
+      var fileKey = fileObj.collectionName + fileObj._id;
+      var inputStream = fileObj.getStream();
+
+      // Write stream to store once we have a suitable fileKey
+      var writeStream = function (newFileKey) {
+        var gridOptions = {
+          root: gridfsName,
+          chunk_size: options.chunk_size || chunkSize,
+          metadata: fileObj.metadata || null,
+          content_type: fileObj.type || 'application/octet-stream'
+        };
+        var gstore = new mongodb.GridStore(self.db, newFileKey, 'w', gridOptions);
+        gstore.open(function (err, gs) {
+          if (err) { return callback(err); }
+
+          inputStream.on('data', function (chunk) {
+            gs.write(chunk, function (err, result) {
+              if (err) {
+                inputStream.removeAllListeners();
+                return callback(err);
+              }
+            });
+          });
+
+          inputStream.on('end', function () {
+            gs.close(function (err) {
+              if (err) { return callback(err); }
+              callback(null, newFileKey);
+            });
+          });
+
+          inputStream.on('error', function (err) {
+            return callback(err);
+          });
+        });
+      };
+
+      if (options.overwrite) {
+        writeStream(fileKey);
+      } else {
+        var fn = fileKey;
+        var findUnusedFileKey = function (err, existing) {
+          if (err) { return callback(err); }
+          if (existing) {
+            // Avoid deep recursion by appending a 6-digit base 36 pseudorandom number
+            fileKey = fn + '_' + Math.floor(Math.random() * 2176782335).toString(36);
+            mongodb.GridStore.exist(self.db, fileKey, gridfsName, {}, findUnusedFileKey);
+          } else {
+            writeStream(fileKey);
+          }
+        };
+        mongodb.GridStore.exist(self.db, fileKey, gridfsName, {}, findUnusedFileKey);
+      }
     },
 
     put: function(fileObj, options, callback) {
