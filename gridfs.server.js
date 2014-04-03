@@ -1,5 +1,6 @@
 var path = Npm.require('path');
 var mongodb = Npm.require('mongodb');
+var ObjectID = Npm.require('mongodb').ObjectID;
 var Grid = Npm.require('gridfs-stream');
 //var Grid = Npm.require('gridfs-locking-stream');
 
@@ -17,6 +18,37 @@ var chunkSize = 1024*1024*2; // 256k is default GridFS chunk size, but performs 
  * Creates a GridFS store instance on the server. Inherits from FS.StorageAdapter
  * type.
  */
+
+
+// XXX: Would be nice if we could just use the meteor id directly in the mongodb
+// It should be possible?
+var UNMISTAKABLE_CHARS = "23456789ABCDEFGHJKLMNPQRSTWXYZabcdefghijkmnopqrstuvwxyz";
+
+var UNMISTAKABLE_CHARS_LOOKUP = {};
+for (var a = 0; a < UNMISTAKABLE_CHARS.length; a++) {
+  UNMISTAKABLE_CHARS_LOOKUP[UNMISTAKABLE_CHARS[a]] = a;
+}
+
+var meteorToMongoId = function(meteorId) {
+  var unit = UNMISTAKABLE_CHARS.length;
+  var index = 1;
+  result = 0;
+  for (var i = 0; i < meteorId.length; i++) {
+    if (typeof UNMISTAKABLE_CHARS_LOOKUP[meteorId[i]] !== 'undefined') {
+      // Add the number at index
+      result += UNMISTAKABLE_CHARS_LOOKUP[meteorId[i]] * index;
+      // Inc index by ^unit
+      index *= unit;
+    } else {
+      throw new Error('Not a meteor ID');
+    }
+  }
+
+  // convert to hex
+  result = result.toString(16).substring(0, 24);
+
+  return result;
+};
 
 FS.Store.GridFS = function(name, options) {
   var self = this;
@@ -51,15 +83,26 @@ FS.Store.GridFS = function(name, options) {
       // The TempStore should track uploads by id too - at the moment
       // TempStore only sets name, _id, collectionName for us to generate the
       // id from.
-      return fileObj.collectionName + fileObj._id;
+      // Create a backup filename in case the file is missing a name
+      var filename = fileObj.collectionName + '-' + fileObj._id;
+
+      return {
+        // Convert the
+        _id: meteorToMongoId(fileObj._id),
+        // suffix root this allows the namespacing needed to make the meteor
+        // id work here
+        root: gridfsName + '.' + fileObj.collectionName,
+        // We also want to store the filename
+        filename: fileObj.name || filename
+      };
     },
     createReadStream: function(fileKey, options) {
       // Init GridFS
       var gfs = new Grid(self.db, mongodb);
 
       return gfs.createReadStream({
-        filename: fileKey,
-        root: gridfsName,
+        _id: fileKey._id,
+        root: fileKey.root,
       });
 
     },
@@ -70,9 +113,10 @@ FS.Store.GridFS = function(name, options) {
       var gfs = new Grid(self.db, mongodb);
 
       var writeStream = gfs.createWriteStream({
-        filename: fileKey,
+        _id: fileKey._id,
+        filename: fileKey.filename,
         mode: 'w',
-        root: gridfsName,
+        root: fileKey.root,
         chunk_size: options.chunk_size || chunkSize,
         // We allow aliases, metadata and contentType to be passed in via
         // options
@@ -99,7 +143,7 @@ FS.Store.GridFS = function(name, options) {
       var gfs = new Grid(self.db, mongodb);
 
       try {
-        gfs.remove({ _id: fileKey, root: gridfsName }, callback);
+        gfs.remove({ _id: fileKey._id, root: fileKey.root }, callback);
       } catch(err) {
         callback(err);
       }
