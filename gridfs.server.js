@@ -19,37 +19,6 @@ var chunkSize = 1024*1024*2; // 256k is default GridFS chunk size, but performs 
  * type.
  */
 
-
-// XXX: Would be nice if we could just use the meteor id directly in the mongodb
-// It should be possible?
-var UNMISTAKABLE_CHARS = "23456789ABCDEFGHJKLMNPQRSTWXYZabcdefghijkmnopqrstuvwxyz";
-
-var UNMISTAKABLE_CHARS_LOOKUP = {};
-for (var a = 0; a < UNMISTAKABLE_CHARS.length; a++) {
-  UNMISTAKABLE_CHARS_LOOKUP[UNMISTAKABLE_CHARS[a]] = a;
-}
-
-var meteorToMongoId = function(meteorId) {
-  var unit = UNMISTAKABLE_CHARS.length;
-  var index = 1;
-  result = 0;
-  for (var i = 0; i < meteorId.length; i++) {
-    if (typeof UNMISTAKABLE_CHARS_LOOKUP[meteorId[i]] !== 'undefined') {
-      // Add the number at index
-      result += UNMISTAKABLE_CHARS_LOOKUP[meteorId[i]] * index;
-      // Inc index by ^unit
-      index *= unit;
-    } else {
-      throw new Error('Not a meteor ID');
-    }
-  }
-
-  // convert to hex
-  result = result.toString(16).substring(0, 24);
-
-  return result;
-};
-
 FS.Store.GridFS = function(name, options) {
   var self = this;
   options = options || {};
@@ -87,8 +56,6 @@ FS.Store.GridFS = function(name, options) {
       var filename = fileObj.collectionName + '-' + fileObj._id;
 
       return {
-        // Convert the
-        _id: meteorToMongoId(fileObj._id),
         // suffix root this allows the namespacing needed to make the meteor
         // id work here
         root: gridfsName + '.' + fileObj.collectionName,
@@ -101,10 +68,9 @@ FS.Store.GridFS = function(name, options) {
       var gfs = new Grid(self.db, mongodb);
 
       return gfs.createReadStream({
-        _id: fileKey._id,
-        root: fileKey.root,
+        _id: ObjectID(fileKey._id),
+        root: fileKey.root
       });
-
     },
     createWriteStream: function(fileKey, options) {
       options = options || {};
@@ -112,8 +78,7 @@ FS.Store.GridFS = function(name, options) {
       // Init GridFS
       var gfs = new Grid(self.db, mongodb);
 
-      var writeStream = gfs.createWriteStream({
-        _id: fileKey._id,
+      var opts = {
         filename: fileKey.filename,
         mode: 'w',
         root: fileKey.root,
@@ -123,16 +88,33 @@ FS.Store.GridFS = function(name, options) {
         aliases: options.aliases || [],
         metadata: options.metadata || null,
         content_type: options.contentType || 'application/octet-stream'
-      });
+      };
+
+      if (fileKey._id) {
+        opts._id = ObjectID(fileKey._id);
+      }
+
+      var writeStream = gfs.createWriteStream(opts);
 
       writeStream.on('close', function(file) {
         if (FS.debug) console.log('SA GridFS - DONE!');
+        // Set the generated _id so that we know it for future reads and writes.
+        // We store the _id as a string and only convert to ObjectID right before
+        // reading, writing, or deleting. If we store the ObjectID itself,
+        // Meteor (EJSON?) seems to convert it to a LocalCollection.ObjectID,
+        // which GFS doesn't understand.
+        fileKey._id = file._id.toString();
+
         // Emit end and return the fileKey, size, and updated date
         writeStream.emit('stored', {
-          fileKey: file._id,
+          fileKey: fileKey,
           size: file.length,
           storedAt: file.uploadDate || new Date()
         });
+      });
+
+      writeStream.on('error', function(error) {
+        if (FS.debug) console.log('SA GridFS - ERROR!', error);
       });
 
       return writeStream;
@@ -143,7 +125,7 @@ FS.Store.GridFS = function(name, options) {
       var gfs = new Grid(self.db, mongodb);
 
       try {
-        gfs.remove({ _id: fileKey._id, root: fileKey.root }, callback);
+        gfs.remove({ _id: ObjectID(fileKey._id), root: fileKey.root }, callback);
       } catch(err) {
         callback(err);
       }
